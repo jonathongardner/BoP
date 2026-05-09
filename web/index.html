@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Bank of Parents</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@1.0.4/css/bulma.min.css" />
+  <style>
+    [v-cloak] { display: none; }
+    .tile-account { cursor: pointer; transition: transform 0.12s ease; }
+    .tile-account:hover { transform: translateY(-2px); }
+    .money { font-variant-numeric: tabular-nums; font-weight: 600; }
+    .tx-withdraw { color: #c0392b; }
+    .tx-deposit { color: #1e8449; }
+    .tx-note { max-width: 12rem; word-break: break-word; }
+    .fab-bar {
+      position: fixed;
+      bottom: 1.5rem;
+      right: 1.5rem;
+      z-index: 29;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      justify-content: flex-end;
+      max-width: calc(100vw - 2rem);
+    }
+    .fab-bar .button {
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+    }
+  </style>
+</head>
+<body>
+  <section id="app" v-cloak class="section">
+    <div class="container">
+      <h1 class="title">Bank of Parents</h1>
+      <p class="subtitle is-6 mb-5">People and accounts &mdash; open an account from a person&apos;s card to move money.</p>
+
+      <p v-if="banner" class="notification is-light py-2 px-3 mb-4" :class="bannerOk ? 'is-success' : 'is-danger'">{{ banner }}</p>
+
+      <div v-if="persons.length === 0 && !loading" class="notification is-light">
+        No people yet. Use <strong>Add person</strong>, then add accounts for them.
+      </div>
+
+      <div class="columns is-multiline">
+        <div v-for="p in persons" :key="p.id" class="column is-half-tablet is-full-mobile">
+          <div class="card">
+            <header class="card-header">
+              <p class="card-header-title">{{ p.name }}</p>
+            </header>
+            <div class="card-content">
+              <div v-if="!p.accounts || p.accounts.length === 0" class="content is-size-7 has-text-grey mb-0">
+                No accounts for this person yet.
+              </div>
+              <div v-else>
+                <div
+                  v-for="a in p.accounts"
+                  :key="a.id"
+                  class="box tile-account py-3 mb-3"
+                  @click="openAccount(a, p)"
+                >
+                  <p class="heading mb-1">{{ a.name }}</p>
+                  <p class="title is-5 money mb-0">{{ formatMoney(a.balance_cents) }}</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div v-show="!modalOpen && !addAccountModalOpen && !addPersonModalOpen" class="fab-bar">
+      <button type="button" class="button is-link is-rounded" title="Add person" @click="openAddPersonModal">
+        Add person
+      </button>
+      <button type="button" class="button is-primary is-rounded" title="Add account" @click="openAddAccountModal">
+        Add account
+      </button>
+    </div>
+
+    <!-- Add person -->
+    <div class="modal" :class="{ 'is-active': addPersonModalOpen }">
+      <div class="modal-background" @click="closeAddPersonModal"></div>
+      <div class="modal-card" style="max-width: 420px;">
+        <header class="modal-card-head">
+          <p class="modal-card-title">New person</p>
+          <button type="button" class="delete" aria-label="close" @click="closeAddPersonModal"></button>
+        </header>
+        <section class="modal-card-body">
+          <div class="field">
+            <label class="label">Name</label>
+            <div class="control">
+              <input class="input" type="text" v-model.trim="newPersonName" placeholder="Name" @keyup.enter="createPerson" />
+            </div>
+            <p v-if="addPersonBanner" class="help" :class="addPersonBannerOk ? 'is-success' : 'is-danger'">{{ addPersonBanner }}</p>
+          </div>
+        </section>
+        <footer class="modal-card-foot" style="justify-content: flex-end;">
+          <button type="button" class="button" @click="closeAddPersonModal">Cancel</button>
+          <button type="button" class="button is-primary" :disabled="!newPersonName || loading" @click="createPerson">Create</button>
+        </footer>
+      </div>
+    </div>
+
+    <!-- Add account -->
+    <div class="modal" :class="{ 'is-active': addAccountModalOpen }">
+      <div class="modal-background" @click="closeAddAccountModal"></div>
+      <div class="modal-card" style="max-width: 420px;">
+        <header class="modal-card-head">
+          <p class="modal-card-title">New account</p>
+          <button type="button" class="delete" aria-label="close" @click="closeAddAccountModal"></button>
+        </header>
+        <section class="modal-card-body">
+          <div class="field">
+            <label class="label">Person</label>
+            <div class="control">
+              <div class="select is-fullwidth">
+                <select v-model.number="newAccountPersonId">
+                  <option disabled :value="0">Select a person…</option>
+                  <option v-for="p in personsFlat" :key="p.id" :value="p.id">{{ p.name }}</option>
+                </select>
+              </div>
+            </div>
+            <p v-if="personsFlat.length === 0" class="help is-warning">Add a person first.</p>
+          </div>
+          <div class="field">
+            <label class="label">Account name</label>
+            <div class="control">
+              <input class="input" type="text" v-model.trim="newName" placeholder="e.g. Savings" @keyup.enter="createAccount" />
+            </div>
+            <p v-if="addModalBanner" class="help" :class="addModalBannerOk ? 'is-success' : 'is-danger'">{{ addModalBanner }}</p>
+          </div>
+        </section>
+        <footer class="modal-card-foot" style="justify-content: flex-end;">
+          <button type="button" class="button" @click="closeAddAccountModal">Cancel</button>
+          <button
+            type="button"
+            class="button is-primary"
+            :disabled="!newName || !newAccountPersonId || loading"
+            @click="createAccount"
+          >
+            Create
+          </button>
+        </footer>
+      </div>
+    </div>
+
+    <!-- Account detail -->
+    <div class="modal" :class="{ 'is-active': modalOpen }">
+      <div class="modal-background" @click="closeModal"></div>
+      <div class="modal-card" style="max-width: 720px;">
+        <header class="modal-card-head">
+          <div v-if="selected">
+            <p class="modal-card-title mb-1">{{ selected.name }}</p>
+            <p v-if="selectedPerson" class="subtitle is-7 mb-0 has-text-grey">{{ selectedPerson.name }}</p>
+          </div>
+          <button type="button" class="delete" aria-label="close" @click="closeModal"></button>
+        </header>
+        <section class="modal-card-body">
+          <p class="mb-3">Balance: <span class="money">{{ selected ? formatMoney(selected.balance_cents) : '' }}</span></p>
+
+          <div class="field is-grouped mb-3">
+            <div class="control is-expanded">
+              <input class="input" type="number" min="0.01" step="0.01" v-model="amountInput" placeholder="Amount (dollars)" />
+            </div>
+            <div class="control">
+              <button class="button is-success" type="button" :disabled="!canTransact" @click="deposit">Deposit</button>
+            </div>
+            <div class="control">
+              <button class="button is-warning" type="button" :disabled="!canTransact" @click="withdraw">Withdraw</button>
+            </div>
+          </div>
+          <div class="field mb-4">
+            <label class="label is-size-7">Description <span class="has-text-grey">(optional, max 255)</span></label>
+            <div class="control">
+              <textarea class="textarea is-small" rows="2" v-model="txDescription" placeholder="e.g. Allowance, reimbursement"></textarea>
+            </div>
+            <p class="help">{{ descriptionCharCount }} / 255</p>
+          </div>
+          <p v-if="modalBanner" class="help mb-4" :class="modalBannerOk ? 'is-success' : 'is-danger'">{{ modalBanner }}</p>
+
+          <h3 class="subtitle is-6 mb-2">Transactions</h3>
+          <div v-if="txLoading" class="py-4">Loading…</div>
+          <div v-else-if="transactions.length === 0" class="notification is-light is-small">No transactions yet.</div>
+          <div v-else class="table-container">
+            <table class="table is-fullwidth is-striped is-narrow">
+              <thead>
+                <tr>
+                  <th>When</th>
+                  <th>Type</th>
+                  <th>Description</th>
+                  <th class="has-text-right">Amount</th>
+                  <th class="has-text-right"> </th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="t in transactions" :key="t.id">
+                  <td>{{ formatTime(t.created_at) }}</td>
+                  <td>
+                    <span :class="t.kind === 'withdraw' ? 'tx-withdraw' : 'tx-deposit'">{{ t.kind }}</span>
+                  </td>
+                  <td class="tx-note is-size-7">{{ t.description || '—' }}</td>
+                  <td class="has-text-right money">{{ formatMoney(t.amount_cents) }}</td>
+                  <td class="has-text-right is-narrow">
+                    <button type="button" class="button is-danger is-small is-light px-2" title="Delete transaction" :disabled="loading" @click.stop="confirmDeleteTransaction(t)">Delete</button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+        <footer class="modal-card-foot" style="justify-content: space-between;">
+          <button
+            type="button"
+            class="button is-danger is-light"
+            :disabled="loading || !selected || selected.balance_cents !== 0"
+            :title="selected && selected.balance_cents !== 0 ? 'Balance must be $0.00 to delete this account' : ''"
+            @click="confirmDeleteAccount"
+          >
+            Delete account
+          </button>
+          <button type="button" class="button" @click="closeModal">Close</button>
+        </footer>
+      </div>
+    </div>
+  </section>
+
+  <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+  <script>
+    const { createApp } = Vue;
+
+    createApp({
+      data() {
+        return {
+          persons: [],
+          loading: false,
+          newName: '',
+          newAccountPersonId: 0,
+          banner: '',
+          bannerOk: true,
+          addPersonModalOpen: false,
+          newPersonName: '',
+          addPersonBanner: '',
+          addPersonBannerOk: true,
+          addAccountModalOpen: false,
+          addModalBanner: '',
+          addModalBannerOk: true,
+          modalOpen: false,
+          selected: null,
+          selectedPerson: null,
+          transactions: [],
+          txLoading: false,
+          amountInput: '',
+          txDescription: '',
+          modalBanner: '',
+          modalBannerOk: true,
+        };
+      },
+      computed: {
+        personsFlat() {
+          return this.persons.map((p) => ({ id: p.id, name: p.name }));
+        },
+        canTransact() {
+          const n = this.parseDollarsToCents(this.amountInput);
+          return this.selected && n > 0 && !this.loading && !this.descriptionTooLong;
+        },
+        descriptionCharCount() {
+          return [...this.txDescription].length;
+        },
+        descriptionTooLong() {
+          return this.descriptionCharCount > 255;
+        },
+      },
+      mounted() {
+        this.loadPersons();
+      },
+      methods: {
+        formatMoney(cents) {
+          const n = Number(cents);
+          if (!Number.isFinite(n)) return '$0.00';
+          return new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD' }).format(n / 100);
+        },
+        formatTime(isoOrSql) {
+          if (!isoOrSql) return '';
+          const d = new Date(isoOrSql.includes('T') ? isoOrSql : isoOrSql.replace(' ', 'T') + 'Z');
+          if (Number.isNaN(d.getTime())) return isoOrSql;
+          return d.toLocaleString();
+        },
+        parseDollarsToCents(s) {
+          const t = String(s).trim();
+          if (!t) return 0;
+          const v = Number.parseFloat(t);
+          if (!Number.isFinite(v) || v <= 0) return 0;
+          return Math.round(v * 100);
+        },
+        findAccountById(accountId) {
+          for (const p of this.persons) {
+            const a = (p.accounts || []).find((x) => x.id === accountId);
+            if (a) return { account: { ...a }, person: { id: p.id, name: p.name } };
+          }
+          return null;
+        },
+        setBanner(msg, ok) {
+          this.banner = msg;
+          this.bannerOk = ok;
+        },
+        setModalBanner(msg, ok) {
+          this.modalBanner = msg;
+          this.modalBannerOk = ok;
+        },
+        setAddModalBanner(msg, ok) {
+          this.addModalBanner = msg;
+          this.addModalBannerOk = ok;
+        },
+        setAddPersonBanner(msg, ok) {
+          this.addPersonBanner = msg;
+          this.addPersonBannerOk = ok;
+        },
+        openAddPersonModal() {
+          this.newPersonName = '';
+          this.setAddPersonBanner('', true);
+          this.addPersonModalOpen = true;
+        },
+        closeAddPersonModal() {
+          this.addPersonModalOpen = false;
+          this.newPersonName = '';
+          this.setAddPersonBanner('', true);
+        },
+        async createPerson() {
+          if (!this.newPersonName) return;
+          this.loading = true;
+          this.setAddPersonBanner('', true);
+          try {
+            const r = await fetch('/api/persons', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: this.newPersonName }),
+            });
+            const data = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error(data.error || r.statusText);
+            this.closeAddPersonModal();
+            await this.loadPersons();
+          } catch (e) {
+            this.setAddPersonBanner(e.message || 'Failed to create person.', false);
+          } finally {
+            this.loading = false;
+          }
+        },
+        openAddAccountModal() {
+          this.newName = '';
+          this.newAccountPersonId = this.personsFlat.length === 1 ? this.personsFlat[0].id : 0;
+          this.setAddModalBanner('', true);
+          this.addAccountModalOpen = true;
+        },
+        closeAddAccountModal() {
+          this.addAccountModalOpen = false;
+          this.newName = '';
+          this.newAccountPersonId = 0;
+          this.setAddModalBanner('', true);
+        },
+        async loadPersons() {
+          this.loading = true;
+          try {
+            const r = await fetch('/api/persons');
+            if (!r.ok) throw new Error(await r.text());
+            this.persons = await r.json();
+            this.setBanner('', true);
+          } catch (e) {
+            this.setBanner('Could not load people.', false);
+          } finally {
+            this.loading = false;
+          }
+        },
+        async createAccount() {
+          if (!this.newName || !this.newAccountPersonId) return;
+          this.loading = true;
+          this.setAddModalBanner('', true);
+          try {
+            const r = await fetch('/api/accounts', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: this.newName, person_id: this.newAccountPersonId }),
+            });
+            const data = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error(data.error || r.statusText);
+            this.closeAddAccountModal();
+            await this.loadPersons();
+          } catch (e) {
+            this.setAddModalBanner(e.message || 'Failed to create account.', false);
+          } finally {
+            this.loading = false;
+          }
+        },
+        async openAccount(a, person) {
+          this.selected = { ...a };
+          this.selectedPerson = person ? { id: person.id, name: person.name } : null;
+          this.modalOpen = true;
+          this.amountInput = '';
+          this.txDescription = '';
+          this.setModalBanner('', true);
+          await this.loadTransactions(a.id);
+        },
+        closeModal() {
+          this.modalOpen = false;
+          this.selected = null;
+          this.selectedPerson = null;
+          this.transactions = [];
+        },
+        async loadTransactions(accountId) {
+          this.txLoading = true;
+          try {
+            const r = await fetch('/api/accounts/' + accountId + '/transactions');
+            if (!r.ok) throw new Error(await r.text());
+            this.transactions = await r.json();
+          } catch (e) {
+            this.setModalBanner('Could not load transactions.', false);
+            this.transactions = [];
+          } finally {
+            this.txLoading = false;
+          }
+        },
+        async deposit() {
+          if (!this.canTransact) return;
+          await this.postAmount('/api/accounts/' + this.selected.id + '/deposit');
+        },
+        async withdraw() {
+          if (!this.canTransact) return;
+          await this.postAmount('/api/accounts/' + this.selected.id + '/withdraw');
+        },
+        async postAmount(url) {
+          const cents = this.parseDollarsToCents(this.amountInput);
+          if (cents <= 0) return;
+          this.loading = true;
+          this.setModalBanner('', true);
+          try {
+            const r = await fetch(url, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ amount_cents: cents, description: this.txDescription.trim() }),
+            });
+            if (!r.ok) {
+              const data = await r.json().catch(() => ({}));
+              throw new Error(data.error || r.statusText);
+            }
+            this.amountInput = '';
+            this.txDescription = '';
+            this.setModalBanner('Done.', true);
+            await this.loadPersons();
+            const hit = this.findAccountById(this.selected.id);
+            if (hit) {
+              this.selected = { ...hit.account };
+              this.selectedPerson = hit.person;
+            }
+            await this.loadTransactions(this.selected.id);
+          } catch (e) {
+            this.setModalBanner(e.message || 'Request failed.', false);
+          } finally {
+            this.loading = false;
+          }
+        },
+        confirmDeleteAccount() {
+          if (!this.selected || this.selected.balance_cents !== 0) return;
+          const name = this.selected.name;
+          if (!confirm('Delete account "' + name + '"? This cannot be undone.')) return;
+          this.deleteAccount();
+        },
+        async deleteAccount() {
+          if (!this.selected) return;
+          this.loading = true;
+          this.setModalBanner('', true);
+          try {
+            const r = await fetch('/api/accounts/' + this.selected.id, { method: 'DELETE' });
+            if (!r.ok) {
+              const data = await r.json().catch(() => ({}));
+              throw new Error(data.error || r.statusText);
+            }
+            this.closeModal();
+            await this.loadPersons();
+          } catch (e) {
+            this.setModalBanner(e.message || 'Could not delete account.', false);
+          } finally {
+            this.loading = false;
+          }
+        },
+        confirmDeleteTransaction(t) {
+          if (!this.selected) return;
+          if (!confirm('Remove this transaction from the ledger? The balance will be adjusted.')) return;
+          this.deleteTransaction(t);
+        },
+        async deleteTransaction(t) {
+          if (!this.selected) return;
+          this.loading = true;
+          this.setModalBanner('', true);
+          try {
+            const r = await fetch('/api/accounts/' + this.selected.id + '/transactions/' + t.id, { method: 'DELETE' });
+            if (!r.ok) {
+              const data = await r.json().catch(() => ({}));
+              throw new Error(data.error || r.statusText);
+            }
+            await this.loadPersons();
+            const hit = this.findAccountById(this.selected.id);
+            if (hit) {
+              this.selected = { ...hit.account };
+              this.selectedPerson = hit.person;
+            }
+            await this.loadTransactions(this.selected.id);
+          } catch (e) {
+            this.setModalBanner(e.message || 'Could not delete transaction.', false);
+          } finally {
+            this.loading = false;
+          }
+        },
+      },
+    }).mount('#app');
+  </script>
+</body>
+</html>
