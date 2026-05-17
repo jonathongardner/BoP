@@ -28,6 +28,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /{$}", s.handleIndex)
 	mux.HandleFunc("GET /api/persons", s.handleListPersons)
 	mux.HandleFunc("POST /api/persons", s.handleCreatePerson)
+	mux.HandleFunc("GET /api/persons/{id}/allowance", s.handleGetAllowance)
+	mux.HandleFunc("PUT /api/persons/{id}/allowance", s.handleUpsertAllowance)
+	mux.HandleFunc("DELETE /api/persons/{id}/allowance", s.handleDeleteAllowance)
 	mux.HandleFunc("GET /api/accounts", s.handleListAccounts)
 	mux.HandleFunc("POST /api/accounts", s.handleCreateAccount)
 	mux.HandleFunc("DELETE /api/accounts/{id}/transactions/{txid}", s.handleDeleteTransaction)
@@ -66,6 +69,64 @@ func (s *Server) handleListPersons(w http.ResponseWriter, r *http.Request) {
 
 type createPersonBody struct {
 	Name string `json:"name"`
+}
+
+func (s *Server) handleGetAllowance(w http.ResponseWriter, r *http.Request) {
+	personID, ok := parsePersonID(w, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	a, err := s.store.GetAllowanceForPerson(r.Context(), personID)
+	if err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, a)
+}
+
+type upsertAllowanceBody struct {
+	AmountCents  int64                  `json:"amount_cents"`
+	IntervalDays int                    `json:"interval_days"`
+	DayOfMonth   *int                   `json:"day_of_month"`
+	DayOfWeek    *int                   `json:"day_of_week"`
+	Description  string                 `json:"description"`
+	Splits       []store.AllowanceSplit `json:"splits"`
+}
+
+func (s *Server) handleUpsertAllowance(w http.ResponseWriter, r *http.Request) {
+	personID, ok := parsePersonID(w, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	var body upsertAllowanceBody
+	if err := decodeJSON(w, r, &body); err != nil {
+		return
+	}
+	a, err := s.store.UpsertAllowance(r.Context(), personID, store.UpsertAllowanceInput{
+		AmountCents:  body.AmountCents,
+		IntervalDays: body.IntervalDays,
+		DayOfMonth:   body.DayOfMonth,
+		DayOfWeek:    body.DayOfWeek,
+		Description:  body.Description,
+		Splits:       body.Splits,
+	})
+	if err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, a)
+}
+
+func (s *Server) handleDeleteAllowance(w http.ResponseWriter, r *http.Request) {
+	personID, ok := parsePersonID(w, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	if err := s.store.DeleteAllowance(r.Context(), personID); err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleCreatePerson(w http.ResponseWriter, r *http.Request) {
@@ -204,6 +265,15 @@ func (s *Server) handleDeleteTransaction(w http.ResponseWriter, r *http.Request)
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func parsePersonID(w http.ResponseWriter, raw string) (int64, bool) {
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || id <= 0 {
+		httpError(w, http.StatusBadRequest, "invalid person id")
+		return 0, false
+	}
+	return id, true
+}
+
 func parseID(w http.ResponseWriter, raw string) (int64, bool) {
 	id, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || id <= 0 {
@@ -268,7 +338,25 @@ func writeStoreErr(w http.ResponseWriter, err error) {
 		httpError(w, http.StatusNotFound, "transaction not found")
 	case errors.Is(err, store.ErrDeleteTransactionBalance):
 		httpError(w, http.StatusBadRequest, "cannot delete transaction: balance would become negative")
+	case errors.Is(err, store.ErrAllowanceNotFound):
+		httpError(w, http.StatusNotFound, "allowance not found")
+	case errors.Is(err, store.ErrAllowanceInvalidSplits):
+		httpError(w, http.StatusBadRequest, "split percentages must total 100")
+	case errors.Is(err, store.ErrAllowanceInvalidInterval):
+		httpError(w, http.StatusBadRequest, "interval must be between 1 and 366 days")
+	case errors.Is(err, store.ErrAllowanceInvalidDayOfMonth):
+		httpError(w, http.StatusBadRequest, "day_of_month must be between 1 and 31 for monthly allowances")
+	case errors.Is(err, store.ErrAllowanceInvalidDayOfWeek):
+		httpError(w, http.StatusBadRequest, "day_of_week must be between 0 (Sunday) and 6 (Saturday) for weekly allowances")
+	case errors.Is(err, store.ErrAllowanceNoSplits):
+		httpError(w, http.StatusBadRequest, "at least one account split is required")
 	default:
+		if strings.Contains(strings.ToLower(err.Error()), "account does not belong") ||
+			strings.Contains(strings.ToLower(err.Error()), "duplicate account") ||
+			strings.Contains(strings.ToLower(err.Error()), "split percent") {
+			httpError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		httpError(w, http.StatusInternalServerError, err.Error())
 	}
 }

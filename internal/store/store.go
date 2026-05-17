@@ -34,9 +34,10 @@ type Account struct {
 }
 
 type PersonWithAccounts struct {
-	ID       int64     `json:"id"`
-	Name     string    `json:"name"`
-	Accounts []Account `json:"accounts"`
+	ID        int64      `json:"id"`
+	Name      string     `json:"name"`
+	Accounts  []Account  `json:"accounts"`
+	Allowance *Allowance `json:"allowance,omitempty"`
 }
 
 type Transaction struct {
@@ -63,6 +64,10 @@ func Open(path string) (*Store, error) {
 
 	s := &Store{db: db}
 	if err := s.migrate(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := s.ProcessDueAllowances(context.Background()); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -109,7 +114,10 @@ func (s *Store) migrate() error {
 		if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_transactions_account ON transactions(account_id, created_at DESC)`); err != nil {
 			return err
 		}
-		return s.migrateTransactionDescription()
+		if err := s.migrateTransactionDescription(); err != nil {
+			return err
+		}
+		return s.migrateAllowances()
 	}
 
 	hasPersonID, err := s.columnExists("accounts", "person_id")
@@ -138,7 +146,7 @@ func (s *Store) migrate() error {
 	if err := s.migrateTransactionDescription(); err != nil {
 		return err
 	}
-	return nil
+	return s.migrateAllowances()
 }
 
 func (s *Store) tableExists(name string) (bool, error) {
@@ -242,6 +250,10 @@ func (s *Store) CreatePerson(ctx context.Context, name string) (*Person, error) 
 }
 
 func (s *Store) ListPersonsWithAccounts(ctx context.Context) ([]PersonWithAccounts, error) {
+	if err := s.ProcessDueAllowances(ctx); err != nil {
+		return nil, err
+	}
+
 	pRows, err := s.db.QueryContext(ctx, `SELECT id, name FROM persons ORDER BY name COLLATE NOCASE`)
 	if err != nil {
 		return nil, err
@@ -273,6 +285,11 @@ func (s *Store) ListPersonsWithAccounts(ctx context.Context) ([]PersonWithAccoun
 			accts = []Account{}
 		}
 		p.Accounts = accts
+		allowance, err := s.loadAllowanceForPerson(ctx, p.ID)
+		if err != nil {
+			return nil, err
+		}
+		p.Allowance = allowance
 		out = append(out, p)
 	}
 	return out, nil
@@ -388,21 +405,7 @@ func (s *Store) Deposit(ctx context.Context, accountID int64, amountCents int64,
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var exists int
-	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM accounts WHERE id = ?`, accountID).Scan(&exists); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrAccountNotFound
-		}
-		return err
-	}
-
-	if _, err := tx.ExecContext(ctx, `UPDATE accounts SET balance_cents = balance_cents + ? WHERE id = ?`, amountCents, accountID); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO transactions (account_id, kind, amount_cents, description) VALUES (?, 'deposit', ?, ?)`,
-		accountID, amountCents, desc,
-	); err != nil {
+	if err := depositInTx(ctx, tx, accountID, amountCents, desc); err != nil {
 		return err
 	}
 	return tx.Commit()

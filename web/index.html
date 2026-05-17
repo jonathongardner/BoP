@@ -27,6 +27,10 @@
     .fab-bar .button {
       box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
     }
+    .allowance-tag {
+      font-size: 0.75rem;
+      color: #3273dc;
+    }
   </style>
 </head>
 <body>
@@ -46,8 +50,17 @@
           <div class="card">
             <header class="card-header">
               <p class="card-header-title">{{ p.name }}</p>
+              <div class="card-header-icon">
+                <button type="button" class="button is-small is-link is-light" title="Scheduled allowance" @click.stop="openAllowanceModal(p)">
+                  Allowance
+                </button>
+              </div>
             </header>
             <div class="card-content">
+              <p v-if="p.allowance" class="allowance-tag mb-3">
+                {{ formatMoney(p.allowance.amount_cents) }} {{ scheduleLabel(p.allowance) }}
+                &middot; next {{ formatTime(p.allowance.next_due_at) }}
+              </p>
               <div v-if="!p.accounts || p.accounts.length === 0" class="content is-size-7 has-text-grey mb-0">
                 No accounts for this person yet.
               </div>
@@ -68,7 +81,7 @@
       </div>
     </div>
 
-    <div v-show="!modalOpen && !addAccountModalOpen && !addPersonModalOpen" class="fab-bar">
+    <div v-show="!modalOpen && !addAccountModalOpen && !addPersonModalOpen && !allowanceModalOpen" class="fab-bar">
       <button type="button" class="button is-link is-rounded" title="Add person" @click="openAddPersonModal">
         Add person
       </button>
@@ -140,6 +153,114 @@
           >
             Create
           </button>
+        </footer>
+      </div>
+    </div>
+
+    <!-- Scheduled allowance -->
+    <div class="modal" :class="{ 'is-active': allowanceModalOpen }">
+      <div class="modal-background" @click="closeAllowanceModal"></div>
+      <div class="modal-card" style="max-width: 520px;">
+        <header class="modal-card-head">
+          <p class="modal-card-title">Scheduled allowance<span v-if="allowancePerson"> — {{ allowancePerson.name }}</span></p>
+          <button type="button" class="delete" aria-label="close" @click="closeAllowanceModal"></button>
+        </header>
+        <section class="modal-card-body">
+          <p v-if="!allowancePerson || !allowancePerson.accounts || allowancePerson.accounts.length === 0" class="notification is-warning is-light is-size-7">
+            Add at least one account for this person before setting an allowance.
+          </p>
+          <template v-else>
+            <div class="field">
+              <label class="label">Amount (per payment)</label>
+              <div class="control">
+                <input class="input" type="number" min="0.01" step="0.01" v-model="allowanceAmountInput" placeholder="Dollars" />
+              </div>
+            </div>
+            <div class="field">
+              <label class="label">How often</label>
+              <div class="control">
+                <div class="select is-fullwidth">
+                  <select v-model="allowanceSchedule">
+                    <option value="weekly">Weekly</option>
+                    <option value="biweekly">Every 2 weeks</option>
+                    <option value="monthly">Monthly (calendar)</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+            <div v-if="allowanceSchedule === 'weekly' || allowanceSchedule === 'biweekly'" class="field">
+              <label class="label">Day of week</label>
+              <div class="control">
+                <div class="select is-fullwidth">
+                  <select v-model.number="allowanceDayOfWeek">
+                    <option v-for="(name, idx) in weekdayNames" :key="idx" :value="idx">{{ name }}</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+            <div v-if="allowanceSchedule === 'monthly'" class="field">
+              <label class="label">Day of month</label>
+              <div class="control">
+                <div class="select is-fullwidth">
+                  <select v-model.number="allowanceDayOfMonth">
+                    <option v-for="d in 31" :key="d" :value="d">{{ ordinalDay(d) }} of each month</option>
+                  </select>
+                </div>
+              </div>
+              <p class="help">If a month has fewer days (e.g. February), payment runs on that month&apos;s last day.</p>
+            </div>
+            <div class="field">
+              <label class="label">Description <span class="has-text-grey is-size-7">(optional)</span></label>
+              <div class="control">
+                <input class="input" type="text" v-model="allowanceDescription" placeholder="Allowance" />
+              </div>
+            </div>
+            <div class="field">
+              <label class="label">Split across accounts</label>
+              <p class="help mb-2">Percentages must total 100%. Missed payments are applied when the app runs again.</p>
+              <div v-for="row in allowanceSplits" :key="row.account_id" class="field is-horizontal mb-2">
+                <div class="field-label is-normal" style="flex-grow: 1;">
+                  <label class="label is-size-7">{{ row.account_name }}</label>
+                </div>
+                <div class="field-body">
+                  <div class="field has-addons">
+                    <p class="control is-expanded">
+                      <input class="input is-small" type="number" min="0" max="100" step="1" v-model.number="row.percent" />
+                    </p>
+                    <p class="control">
+                      <span class="button is-static is-small">%</span>
+                    </p>
+                  </div>
+                </div>
+              </div>
+              <p class="help" :class="allowanceSplitTotal === 100 ? 'is-success' : 'is-danger'">
+                Total: {{ allowanceSplitTotal }}%
+              </p>
+            </div>
+            <p v-if="allowanceNextDue" class="is-size-7 has-text-grey">Next due: {{ formatTime(allowanceNextDue) }}</p>
+          </template>
+          <p v-if="allowanceBanner" class="help mt-3" :class="allowanceBannerOk ? 'is-success' : 'is-danger'">{{ allowanceBanner }}</p>
+        </section>
+        <footer class="modal-card-foot" style="justify-content: space-between;">
+          <button
+            type="button"
+            class="button is-danger is-light"
+            :disabled="!allowanceHasSaved || loading"
+            @click="confirmDeleteAllowance"
+          >
+            Remove schedule
+          </button>
+          <div>
+            <button type="button" class="button" @click="closeAllowanceModal">Cancel</button>
+            <button
+              type="button"
+              class="button is-primary"
+              :disabled="!canSaveAllowance || loading"
+              @click="saveAllowance"
+            >
+              Save
+            </button>
+          </div>
         </footer>
       </div>
     </div>
@@ -253,6 +374,19 @@
           txDescription: '',
           modalBanner: '',
           modalBannerOk: true,
+          allowanceModalOpen: false,
+          allowancePerson: null,
+          allowanceAmountInput: '',
+          allowanceSchedule: 'weekly',
+          allowanceDayOfMonth: 1,
+          allowanceDayOfWeek: 0,
+          weekdayNames: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'],
+          allowanceDescription: '',
+          allowanceSplits: [],
+          allowanceNextDue: '',
+          allowanceHasSaved: false,
+          allowanceBanner: '',
+          allowanceBannerOk: true,
         };
       },
       computed: {
@@ -269,6 +403,20 @@
         descriptionTooLong() {
           return this.descriptionCharCount > 255;
         },
+        allowanceAmountCents() {
+          return this.parseDollarsToCents(this.allowanceAmountInput);
+        },
+        allowanceSplitTotal() {
+          return this.allowanceSplits.reduce((sum, row) => sum + (Number(row.percent) || 0), 0);
+        },
+        canSaveAllowance() {
+          if (!this.allowancePerson || !this.allowancePerson.accounts || this.allowancePerson.accounts.length === 0) {
+            return false;
+          }
+          if (this.allowanceAmountCents <= 0) return false;
+          if (this.allowanceSplitTotal !== 100) return false;
+          return !this.loading;
+        },
       },
       mounted() {
         this.loadPersons();
@@ -278,6 +426,144 @@
           const n = Number(cents);
           if (!Number.isFinite(n)) return '$0.00';
           return new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD' }).format(n / 100);
+        },
+        ordinalDay(n) {
+          const v = n % 100;
+          const suffix = (v >= 11 && v <= 13) ? 'th' : ['th', 'st', 'nd', 'rd', 'th', 'th', 'th', 'th', 'th', 'th'][n % 10];
+          return n + suffix;
+        },
+        scheduleLabel(allowance) {
+          if (!allowance) return '';
+          if (allowance.day_of_month) {
+            return 'on the ' + this.ordinalDay(allowance.day_of_month) + ' of each month';
+          }
+          const day = allowance.day_of_week != null ? this.weekdayNames[allowance.day_of_week] : null;
+          if (allowance.interval_days === 14 && day) return 'every 2 weeks on ' + day;
+          if (allowance.interval_days === 7 && day) return 'every ' + day;
+          if (allowance.interval_days === 14) return 'every 2 weeks';
+          if (allowance.interval_days === 7) return 'every week';
+          return 'every ' + allowance.interval_days + ' days';
+        },
+        defaultAllowanceSplits(accounts) {
+          const n = accounts.length;
+          const base = Math.floor(100 / n);
+          let remainder = 100 - base * n;
+          return accounts.map((a) => {
+            const extra = remainder > 0 ? 1 : 0;
+            if (remainder > 0) remainder -= 1;
+            return { account_id: a.id, account_name: a.name, percent: base + extra };
+          });
+        },
+        setAllowanceBanner(msg, ok) {
+          this.allowanceBanner = msg;
+          this.allowanceBannerOk = ok;
+        },
+        allowanceRequestBody() {
+          const body = {
+            amount_cents: this.allowanceAmountCents,
+            description: this.allowanceDescription.trim(),
+            splits: this.allowanceSplits.map((row) => ({
+              account_id: row.account_id,
+              percent: row.percent,
+            })),
+          };
+          if (this.allowanceSchedule === 'monthly') {
+            body.interval_days = 0;
+            body.day_of_month = this.allowanceDayOfMonth;
+          } else {
+            body.interval_days = this.allowanceSchedule === 'biweekly' ? 14 : 7;
+            body.day_of_week = this.allowanceDayOfWeek;
+          }
+          return body;
+        },
+        openAllowanceModal(person) {
+          this.allowancePerson = { ...person, accounts: [...(person.accounts || [])] };
+          const existing = person.allowance;
+          if (existing) {
+            this.allowanceAmountInput = String((existing.amount_cents / 100).toFixed(2));
+            if (existing.day_of_month) {
+              this.allowanceSchedule = 'monthly';
+              this.allowanceDayOfMonth = existing.day_of_month;
+              this.allowanceDayOfWeek = 0;
+            } else if (existing.interval_days === 14) {
+              this.allowanceSchedule = 'biweekly';
+              this.allowanceDayOfWeek = existing.day_of_week != null ? existing.day_of_week : 0;
+            } else {
+              this.allowanceSchedule = 'weekly';
+              this.allowanceDayOfWeek = existing.day_of_week != null ? existing.day_of_week : 0;
+            }
+            this.allowanceDescription = existing.description || '';
+            this.allowanceNextDue = existing.next_due_at || '';
+            this.allowanceHasSaved = true;
+            const byAccount = new Map((existing.splits || []).map((s) => [s.account_id, s.percent]));
+            this.allowanceSplits = (person.accounts || []).map((a) => ({
+              account_id: a.id,
+              account_name: a.name,
+              percent: byAccount.get(a.id) ?? 0,
+            }));
+          } else {
+            this.allowanceAmountInput = '';
+            this.allowanceSchedule = 'weekly';
+            this.allowanceDayOfMonth = 1;
+            this.allowanceDayOfWeek = new Date().getDay();
+            this.allowanceDescription = '';
+            this.allowanceNextDue = '';
+            this.allowanceHasSaved = false;
+            this.allowanceSplits = this.defaultAllowanceSplits(person.accounts || []);
+          }
+          this.setAllowanceBanner('', true);
+          this.allowanceModalOpen = true;
+        },
+        closeAllowanceModal() {
+          this.allowanceModalOpen = false;
+          this.allowancePerson = null;
+          this.allowanceSplits = [];
+          this.setAllowanceBanner('', true);
+        },
+        async saveAllowance() {
+          if (!this.canSaveAllowance || !this.allowancePerson) return;
+          this.loading = true;
+          this.setAllowanceBanner('', true);
+          try {
+            const r = await fetch('/api/persons/' + this.allowancePerson.id + '/allowance', {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(this.allowanceRequestBody()),
+            });
+            const data = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error(data.error || r.statusText);
+            this.allowanceNextDue = data.next_due_at || '';
+            this.allowanceHasSaved = true;
+            this.closeAllowanceModal();
+            await this.loadPersons();
+          } catch (e) {
+            this.setAllowanceBanner(e.message || 'Could not save allowance.', false);
+          } finally {
+            this.loading = false;
+          }
+        },
+        confirmDeleteAllowance() {
+          if (!this.allowanceHasSaved || !this.allowancePerson) return;
+          if (!confirm('Remove the scheduled allowance for ' + this.allowancePerson.name + '?')) return;
+          this.deleteAllowance();
+        },
+        async deleteAllowance() {
+          if (!this.allowancePerson) return;
+          this.loading = true;
+          this.setAllowanceBanner('', true);
+          try {
+            const r = await fetch('/api/persons/' + this.allowancePerson.id + '/allowance', { method: 'DELETE' });
+            if (!r.ok) {
+              const data = await r.json().catch(() => ({}));
+              throw new Error(data.error || r.statusText);
+            }
+            this.closeAllowanceModal();
+            await this.loadPersons();
+          } catch (e) {
+            this.setAllowanceBanner(e.message || 'Could not remove allowance.', false);
+          } finally {
+            this.loading = false;
+          }
         },
         formatTime(isoOrSql) {
           if (!isoOrSql) return '';
